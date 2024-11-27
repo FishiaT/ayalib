@@ -1,5 +1,5 @@
 models = "/v1/models"
 health = "/health"
 tokenize = "/tokenize"
-completion = "/completion"
+completion = "/v1/completions"
 embedding = "/embedding"

@@ -5,7 +5,7 @@ templates = {
         "assistant": "<|im_start|>assistant\n",
         "suffix": "<|im_end|>\n"
     },
-    "llama3-instruct": {
+    "llama3": {
         "system": "<|start_header_id|>system<|end_header_id|>\n\n",
         "user": "<|start_header_id|>user<|end_header_id|>\n\n",
         "assistant": "<|start_header_id|>assistant<|end_header_id|>\n\n",
