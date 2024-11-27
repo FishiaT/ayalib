@@ -1,0 +1,5 @@
+models = "/v1/models"
+health = "/health"
+tokenize = "/tokenize"
+completion = "/completion"
+embedding = "/embedding"
