@@ -1,5 +1,0 @@
-models = "/v1/models"
-health = "/health"
-tokenize = "/tokenize"
-completion = "/v1/completions"
-embedding = "/embedding"

@@ -1,9 +1,14 @@
-from utils import endpoints, chat_templates
-from pathlib import Path
 import requests
 import sseclient
 import json
-import datetime
+
+endpoints = {
+   "models": "/v1/models",
+   "props": "/props",
+   "tokenize": "/tokenize",
+   "chat_completions": "/v1/chat/completions",
+   "embedding": "/v1/embeddings" 
+}
 
 class AyaOption:
     ignore_eos = False
@@ -25,6 +30,7 @@ class AyaOption:
     typical_p = 1.0
     repeat_penalty = 1.1
     repeat_last_n = 64
+    penalize_nl = True
     mirostat = 0
     mirostat_tau = 5.0
     mirostat_eta = 0.1
@@ -58,6 +64,7 @@ class AyaOption:
             "typical_p": self.typical_p,
             "repeat_penalty": self.repeat_penalty,
             "repeat_last_n": self.repeat_last_n,
+            "penalize_nl": self.penalize_nl,
             "mirostat": self.mirostat,
             "mirostat_tau": self.mirostat_eta,
             "xtc_probability": self.xtc_probability,
@@ -70,76 +77,114 @@ class AyaOption:
         }
 
 class Aya:
-    url = None
-    api_key = None
-    chat_template = {}
+    apis = {}
+    model = None
     messages = []
+    storage = {}
     max_aval_ctx = 0
     used_ctx = 0
-    def __init__(self, url, api_key, chat_template):
-        self.chat_template = chat_templates.get_template(chat_template)
-        r = requests.get(f"{url}{endpoints.models}", headers={"Bearer": api_key})
-        r_data = json.loads(r.text)
-        if "data" in r_data.keys():
-            self.url = url
-            self.api_key = api_key
-            self.__dryrun__()
-    def __build_prompt__(self):
-        prompt = ""
-        for msg in self.messages:
-            prompt += f"{self.chat_template[msg['role']]}{msg['content']}{self.chat_template['suffix']}"
-        return prompt
+    stop = False
+    inferencing = False
+    def __init__(self):
+        self.apis = {
+            "llm": {
+                "url": "",
+                "api_key": ""
+            },
+            "embd": {
+                "url": "",
+                "api_key": ""
+            }
+        }
     def __tokenize__(self, prompt):
-        r = requests.post(f"{self.url}{endpoints.tokenize}", headers={"Bearer": self.api_key}, json={"content": prompt})
+        r = requests.post(f"{self.apis['llm']['url']}{endpoints["tokenize"]}", headers={"Authorization": f"Bearer {self.apis['llm']['api_key']}"}, json={"content": prompt})
         r_data = json.loads(r.text)
         return len(r_data['tokens'])
-    def __completions__(self, prompt: str, option: AyaOption, raw_data: bool = False):
+    def __completions__(self, messages: list, option: AyaOption, raw_data: bool = False):
         headers = {
-            "Bearer": self.api_key,
+            "Authorization": f"Bearer {self.apis['llm']['api_key']}",
             "Accept": "text/event-stream"
         }
         body = option.get_options()
-        body['prompt'] = prompt
-        r = requests.post(f"{self.url}{endpoints.completion}", headers=headers, json=body, stream=True)
+        body['messages'] = messages
+        r = requests.post(f"{self.apis['llm']['url']}{endpoints["chat_completions"]}", headers=headers, json=body, stream=True)
         c = sseclient.SSEClient(r)
         for e in c.events():
-            data = json.loads(e.data)
-            if not raw_data:
-                yield data['content']
-            else:
-                yield data
-    def __dryrun__(self):
-        option = AyaOption("")
-        option.max_tokens = 1
-        r = {}
-        for i in self.__completions__("DRYRUN", option, True):
-            r = i
-        self.max_aval_ctx = r['generation_settings']['n_ctx']
+            if e.data != "[DONE]":
+                data = json.loads(e.data)
+                if not raw_data:
+                    if data['choices'][0]['delta']:
+                        yield data['choices'][0]['delta']['content']
+                else:
+                    yield data
+                if self.stop == True:
+                    break
+    def __embeddings__(self, text: str, encoding_format: str = "float"):
+        headers = {
+            "Authorization": f"Bearer {self.apis['embd']['api_key']}"
+        }
+        body = {
+            "input": text,
+            "encoding_format": encoding_format
+        }
+        r = requests.post(f"{self.apis['embd']['url']}{endpoints["embedding"]}", headers=headers, json=body)
+        print(json.loads(r.text))
+    def connect_llm(self, url, api_key = "no-api-key"):
+        r = requests.get(f"{url}{endpoints["models"]}", headers={"Authorization": f"Bearer api_key"})
+        r_data = json.loads(r.text)
+        if "data" in r_data.keys():
+            self.apis['llm']['url'] = url
+            self.apis['llm']['api_key'] = api_key
+            self.apis['embd']['url'] = url
+            self.apis['embd']['api_key'] = api_key
+        r = requests.get(f"{url}{endpoints["props"]}")
+        r_data = json.loads(r.text)
+        if "default_generation_settings" in r_data.keys():
+            self.max_aval_ctx = r_data['default_generation_settings']['n_ctx']
+            self.model = r_data['default_generation_settings']['model']
+    def change_embd_model(self, url, api_key = "no-api-key"):
+        self.apis['embd']['url'] = url
+        self.apis['embd']['api_key'] = api_key
     def add_message(self, role: str, content: str):
         role = role.lower()
         if role not in ["system", "assistant", "user"]:
             raise Exception("Valid roles are system, assistant and user!")
         message = {
             "role": role,
-            "content": content,
-            "time": str(int(round(datetime.datetime.now().timestamp())))
+            "content": content
         }
         self.messages.append(message)
     def remove_message(self, index: int):
         self.messages.pop(index)
+    def get_message(self, index: int):
+        return self.messages[index]
     def clear_history(self):
+        msgs = self.messages
         self.messages = []
+        return msgs
+    def storage_add(self, key, value):
+        self.storage[key] = value
+    def storage_delete(self, key):
+        self.storage.pop(key)
+    def storage_get(self, key):
+        return self.storage[key]
+    def stop_inference(self):
+        if self.inferencing == True:
+            self.stop = True
     def inference(self, prompt: str, option: AyaOption = AyaOption()):
+        self.inferencing = True
         if len(self.messages) == 0 and not option.system_prompt == "":
             self.add_message("system", option.system_prompt)
             self.used_ctx += self.__tokenize__(option.system_prompt)
         self.add_message("user", prompt)
         self.used_ctx += self.__tokenize__(prompt)
-        prompt = self.__build_prompt__()
-        prompt += f"{prompt}{self.chat_template['assistant']}"
-        completion = self.__completions__(prompt, option)
         response = ""
-        for c in completion:
+        for c in self.__completions__(self.messages, option):
             response += c
             yield c
-        self.add_message("assistant", response)
+        if self.stop != True:
+            self.used_ctx += self.__tokenize__(response)
+            self.add_message("assistant", response)
+        else:
+            self.stop = False
+        self.inferencing = False
